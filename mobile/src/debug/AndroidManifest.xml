@@ -1,7 +1,24 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <!-- BYD vendor read permissions whitelisted by DiLink 1.0's modified PackageInstaller.
+         The driver flips each toggle in BYD Settings -> App -> DiPlay HUD Test -> Permissions.
+         See docs/BYD_VENDOR_PERMISSIONS.md for the firmware audit that identified these six. -->
+    <uses-permission android:name="android.permission.BYDAUTO_AC_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_BODYWORK_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_DOOR_LOCK_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_INSTRUMENT_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_PANORAMA_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_SETTING_COMMON" />
 <queries><package android:name="com.byd.clusterdebug" /></queries>
     <application android:label="DiPlay HUD Test" tools:replace="android:label">
     <receiver android:name="com.shilapi.xcertplay.hud.StarterBridgeReceiver" android:exported="true" android:permission="android.permission.DUMP" />
     <activity android:name="com.shilapi.xcertplay.hud.StandaloneHudDemoActivity" android:exported="true" android:permission="android.permission.DUMP" />
+    <activity android:name="com.shilapi.xcertplay.hud.BydVehiclePermissionsProbeActivity"
+        android:exported="true"
+        android:label="BYD Permissions Probe"
+        android:taskAffinity="com.shihab.diplay.hudtest.probe">
+        <intent-filter>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent-filter>
+    </activity>
     </application></manifest>
