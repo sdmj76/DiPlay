@@ -80,8 +80,9 @@ class BydVehiclePermissionsProbeActivity : Activity() {
             )
             addView(
                 TextView(this@BydVehiclePermissionsProbeActivity).apply {
-                    text = "Read-only. Flip the six BYDAUTO_*_COMMON toggles in BYD Settings → App → " +
-                        "DiPlay HUD Test → Permissions, then tap Refresh."
+                    text = "Read-only: lists the installed BYD SDK surface and calls only " +
+                        "zero-argument readers. Flip the six BYDAUTO_*_COMMON toggles in BYD " +
+                        "Settings → App → DiPlay HUD Test → Permissions, then tap Refresh."
                     textSize = 12f
                     setPadding(16, 0, 16, 8)
                 }
@@ -108,17 +109,20 @@ class BydVehiclePermissionsProbeActivity : Activity() {
         output.text = "Reading…"
         summary.text = ""
         try {
-            val results = BydVehiclePermissionProbe.probe(this)
+            val report = BydVehiclePermissionProbe.probe(this)
             val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
             val header = "DiPlay HUD-test vehicle permission probe\n" +
                 "ts=$stamp pkg=$packageName uid=${android.os.Process.myUid()}\n" +
                 "build=${android.os.Build.FINGERPRINT}"
-            val text = BydVehiclePermissionProbe.format(results, header)
+            val text = BydVehiclePermissionProbe.format(report, header)
             output.text = text
+            val results = report.results
             val granted = results.count { it.granted }
-            val sdkOk = results.count { it.deviceGetInstance == "ok" }
-            val reads = results.sumOf { it.readings.size }
-            summary.text = "Granted $granted/${results.size} • getInstance ok $sdkOk/${results.size} • feature ids read $reads"
+            val sdkOk = results.count { it.getInstance == "ok" }
+            val values = results.sumOf { result -> result.reads.count { it.error == null } }
+            val reads = results.sumOf { it.reads.size }
+            summary.text = "Granted $granted/${results.size} • getInstance ok $sdkOk/${results.size} • " +
+                "readers $values/$reads returned a value"
             Log.i(TAG, text)
         } catch (error: Throwable) {
             output.text = "Probe failed: ${error.javaClass.simpleName}: ${error.message}"

@@ -1,6 +1,7 @@
 package com.shilapi.xcertplay.hud
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -20,79 +21,130 @@ class BydVehiclePermissionProbeTest {
         )
     }
 
-    @Test fun everyCategoryOffersCandidatesForEveryLookup() {
+    /** Class names were read out of VP128 (DiLink 1.0) firmware; a typo would silently probe nothing. */
+    @Test fun usesTheClassNamesVerifiedAgainstDiLink1Firmware() {
         for (category in BydVehiclePermissionProbe.CATEGORIES) {
             assertTrue(
-                "${category.label} must offer at least one feature-id catalog candidate",
-                category.catalogNestedCandidates.isNotEmpty(),
+                "${category.label} device class must be a bydauto device",
+                category.deviceClass.startsWith("android.hardware.bydauto.") &&
+                    category.deviceClass.substringAfterLast('.').let {
+                        it.startsWith("BYDAuto") && it.endsWith("Device")
+                    },
             )
             assertTrue(
-                "${category.label} must offer at least one device-constant candidate",
-                category.deviceConstantCandidates.isNotEmpty(),
+                "${category.label} listener class must be a bydauto Abs listener",
+                category.listenerClass.startsWith("android.hardware.bydauto.") &&
+                    category.listenerClass.substringAfterLast('.').let {
+                        it.startsWith("AbsBYDAuto") && it.endsWith("Listener")
+                    },
+            )
+            assertEquals(
+                "${category.label} device and listener must share a subpackage",
+                category.deviceClass.substringBeforeLast('.'),
+                category.listenerClass.substringBeforeLast('.'),
             )
             assertTrue(
-                "${category.label} must offer at least one SDK device class candidate",
-                category.deviceClassCandidates.isNotEmpty(),
+                "${category.label} device constant must be a BYDAUTO_DEVICE_* name",
+                category.deviceConstant.startsWith("BYDAUTO_DEVICE_"),
             )
         }
     }
 
-    @Test fun formatCoversEveryCategoryAndIsSelfIdentifying() {
-        val fakes = BydVehiclePermissionProbe.CATEGORIES.map { category ->
+    /** The probe must never hand a value to the car: no writer may pass the reader filter. */
+    @Test fun refusesEveryWriteShapedMethodName() {
+        val writers = listOf(
+            "setTemperature", "sendAutoNaviStatus", "setMediaState", "writeConfig",
+            "startNavigation", "stopNavigation", "registerListener", "unregisterListener",
+            "releaseDevice", "resetAll", "clearCache", "requestControl", "enableHud",
+            "getAndSetMode", "isSetEnabled", "hasPendingWrite", "canResetCluster",
+            "openDoor", "unlockDoor", "rebootUnit", "applyProfile", "notifyChange",
+        )
+        for (name in writers) {
+            assertTrue(
+                "$name must be refused as write-shaped",
+                BydVehiclePermissionProbe.isWriteShapedForTest(name),
+            )
+        }
+    }
+
+    @Test fun acceptsPlainReaderNames() {
+        val readers = listOf(
+            "getTemperature", "getDoorLockState", "isAcOn", "hasRearCamera",
+            "queryVin", "readOdometer", "supportHud", "getBacklightBrightness",
+        )
+        for (name in readers) {
+            assertFalse(
+                "$name must be accepted as a reader",
+                BydVehiclePermissionProbe.isWriteShapedForTest(name),
+            )
+        }
+    }
+
+    @Test fun formatCoversEveryCategoryAndTheSharedSurface() {
+        val shared = BydVehiclePermissionProbe.SharedSurface(
+            managerMethods = listOf("getInstance(Context): BYDAutoDeviceManager"),
+            baseDeviceMethods = listOf("getDeviceType(): int"),
+            constants = listOf("BYDAUTO_DEVICE_AC" to 1000),
+            featureIdsPresent = false,
+        )
+        val results = BydVehiclePermissionProbe.CATEGORIES.map { category ->
             BydVehiclePermissionProbe.Result(
                 category = category,
-                granted = false,
-                resolvedCatalog = null,
-                resolvedDeviceConstant = null,
-                deviceType = null,
-                resolvedDeviceClass = null,
-                deviceGetInstance = "class-not-found",
-                readings = emptyList(),
-                note = "off-car probe",
+                granted = true,
+                deviceType = 1000,
+                getInstance = "ok",
+                deviceMethods = listOf("getFoo(): int"),
+                listenerCallbacks = listOf("onFooChanged(int): void"),
+                reads = listOf(BydVehiclePermissionProbe.ReadResult("getFoo(): int", "7")),
             )
         }
-        val text = BydVehiclePermissionProbe.format(fakes, header = "unit-test")
+        val report = BydVehiclePermissionProbe.Report(shared, results)
+        val text = BydVehiclePermissionProbe.format(report, header = "unit-test")
+
         assertTrue("header is included", text.startsWith("unit-test"))
+        assertTrue("shared surface is reported", text.contains("SDK surface (shared)"))
+        assertTrue(
+            "the absent feature-id catalog is called out",
+            text.contains("BYDAutoFeatureIds present: false"),
+        )
+        assertTrue("shared constants are listed", text.contains("BYDAUTO_DEVICE_AC = 1000"))
         for (category in BydVehiclePermissionProbe.CATEGORIES) {
-            assertTrue(
-                "format must mention category label ${category.label}",
-                text.contains(category.label),
-            )
-            assertTrue(
-                "format must mention permission ${category.permission}",
-                text.contains(category.permission),
-            )
+            assertTrue("mentions ${category.label}", text.contains(category.label))
+            assertTrue("mentions ${category.permission}", text.contains(category.permission))
+            assertTrue("mentions ${category.deviceClass}", text.contains(category.deviceClass))
         }
+        assertTrue("reader values are rendered", text.contains("getFoo(): int = 7"))
+        assertTrue("listener callbacks are rendered", text.contains("onFooChanged(int): void"))
     }
 
-    @Test fun formatRendersReadingsAndErrorsInHex() {
-        val category = BydVehiclePermissionProbe.CATEGORIES.first()
+    @Test fun formatMarksFailedReadersAsErrors() {
         val result = BydVehiclePermissionProbe.Result(
-            category = category,
-            granted = true,
-            resolvedCatalog = category.catalogNestedCandidates.first(),
-            resolvedDeviceConstant = category.deviceConstantCandidates.first(),
-            deviceType = 1003,
-            resolvedDeviceClass = category.deviceClassCandidates.first(),
-            deviceGetInstance = "ok",
-            readings = listOf(
-                BydVehiclePermissionProbe.Reading("AC_TEMP_GET", featureId = 0x12345678, value = 42L),
-                BydVehiclePermissionProbe.Reading(
-                    "AC_MISSING_GET",
-                    featureId = 0x40C03032,
-                    value = null,
+            category = BydVehiclePermissionProbe.CATEGORIES.first(),
+            granted = false,
+            deviceType = null,
+            getInstance = "SecurityException: denied",
+            deviceMethods = emptyList(),
+            listenerCallbacks = emptyList(),
+            reads = listOf(
+                BydVehiclePermissionProbe.ReadResult(
+                    "getTemperature(): int",
+                    null,
                     error = "SecurityException: denied",
-                ),
+                )
             ),
+            note = "getInstance refused; no reader was called",
         )
-        val text = BydVehiclePermissionProbe.format(listOf(result))
+        val text = BydVehiclePermissionProbe.format(
+            BydVehiclePermissionProbe.Report(
+                BydVehiclePermissionProbe.SharedSurface(emptyList(), emptyList(), emptyList(), false),
+                listOf(result),
+            )
+        )
         assertTrue(
-            "readable field prints its decimal value",
-            text.contains("AC_TEMP_GET [0x12345678] = 42"),
+            "failed reader is marked ERR",
+            text.contains("getTemperature(): int = ERR SecurityException: denied"),
         )
-        assertTrue(
-            "error path marks the field as ERR with the exception summary",
-            text.contains("AC_MISSING_GET [0x40c03032] = ERR SecurityException: denied"),
-        )
+        assertTrue("missing device constant is explicit", text.contains("(not found)"))
+        assertTrue("the note is surfaced", text.contains("getInstance refused"))
     }
 }

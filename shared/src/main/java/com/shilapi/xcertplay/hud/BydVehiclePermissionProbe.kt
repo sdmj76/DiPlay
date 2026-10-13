@@ -3,6 +3,7 @@ package com.shilapi.xcertplay.hud
 import android.content.Context
 import android.content.pm.PackageManager
 import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 
 /**
@@ -10,142 +11,135 @@ import java.lang.reflect.Modifier
  * on DiLink 1.0 lets a driver grant from Settings -> App -> Permissions. See
  * docs/BYD_VENDOR_PERMISSIONS.md for the firmware audit that identified these six.
  *
- * For each category the probe records whether the permission is granted on this install,
- * whether the matching SDK device class can be built with [getInstance] (the SDK's own
- * caller-side permission check), and the value every advertised feature id under the matching
- * BYDAutoFeatureIds$<Nested> nested class returns from BYDAutoDeviceManager.getInt.
+ * DiLink 1.0 ships no BYDAutoFeatureIds catalog (verified against VP128 firmware), so there is
+ * no feature-id list to sweep the way DiLink 5.x allows. Instead the probe asks the installed SDK
+ * to describe itself: it records each device class's method signatures, the matching
+ * AbsBYDAuto*Listener callbacks the car can push, and the value returned by every zero-argument
+ * reader it is safe to call.
  *
- * The probe performs no vehicle writes.
+ * The probe performs no vehicle writes. Only zero-argument, non-void methods whose names begin
+ * with a read verb and which pass [FORBIDDEN_PREFIX] are ever invoked.
  */
 object BydVehiclePermissionProbe {
-    /**
-     * One probed permission domain. Several candidate class/constant names cover minor BYD
-     * firmware naming drift; the first that resolves is reported in the result.
-     */
+    /** One probed permission domain. Class names verified against VP128 (DiLink 1.0) firmware. */
     data class Category(
         val label: String,
         val permission: String,
-        /** Candidates for BYDAutoFeatureIds$<Nested>. */
-        val catalogNestedCandidates: List<String>,
-        /** Candidates for the BYDAutoConstants.BYDAUTO_DEVICE_<X> field name. */
-        val deviceConstantCandidates: List<String>,
-        /** Candidates for the fully-qualified BYDAutoXxxDevice class name. */
-        val deviceClassCandidates: List<String>,
+        val deviceClass: String,
+        val listenerClass: String,
+        val deviceConstant: String,
     )
 
     val CATEGORIES: List<Category> = listOf(
         Category(
             label = "Air conditioning",
             permission = "android.permission.BYDAUTO_AC_COMMON",
-            catalogNestedCandidates = listOf("AC", "Ac", "AirCondition", "AirConditioner"),
-            deviceConstantCandidates = listOf("BYDAUTO_DEVICE_AC", "BYDAUTO_DEVICE_AIRCONDITION"),
-            deviceClassCandidates = listOf(
-                "android.hardware.bydauto.ac.BYDAutoAcDevice",
-                "android.hardware.bydauto.aircondition.BYDAutoAirConditionDevice",
-            ),
+            deviceClass = "android.hardware.bydauto.ac.BYDAutoAcDevice",
+            listenerClass = "android.hardware.bydauto.ac.AbsBYDAutoAcListener",
+            deviceConstant = "BYDAUTO_DEVICE_AC",
         ),
         Category(
             label = "Bodywork",
             permission = "android.permission.BYDAUTO_BODYWORK_COMMON",
-            catalogNestedCandidates = listOf("Bodywork", "BodyWork"),
-            deviceConstantCandidates = listOf("BYDAUTO_DEVICE_BODYWORK"),
-            deviceClassCandidates = listOf("android.hardware.bydauto.bodywork.BYDAutoBodyworkDevice"),
+            deviceClass = "android.hardware.bydauto.bodywork.BYDAutoBodyworkDevice",
+            listenerClass = "android.hardware.bydauto.bodywork.AbsBYDAutoBodyworkListener",
+            deviceConstant = "BYDAUTO_DEVICE_BODYWORK",
         ),
         Category(
             label = "Door lock",
             permission = "android.permission.BYDAUTO_DOOR_LOCK_COMMON",
-            catalogNestedCandidates = listOf("DoorLock", "Doorlock"),
-            deviceConstantCandidates = listOf("BYDAUTO_DEVICE_DOORLOCK", "BYDAUTO_DEVICE_DOOR_LOCK"),
-            deviceClassCandidates = listOf(
-                "android.hardware.bydauto.doorlock.BYDAutoDoorLockDevice",
-                "android.hardware.bydauto.doorlock.BYDAutoDoorlockDevice",
-            ),
+            deviceClass = "android.hardware.bydauto.doorlock.BYDAutoDoorLockDevice",
+            listenerClass = "android.hardware.bydauto.doorlock.AbsBYDAutoDoorLockListener",
+            deviceConstant = "BYDAUTO_DEVICE_DOOR_LOCK",
         ),
         Category(
             label = "Instrument cluster",
             permission = "android.permission.BYDAUTO_INSTRUMENT_COMMON",
-            catalogNestedCandidates = listOf("Instrument"),
-            deviceConstantCandidates = listOf("BYDAUTO_DEVICE_INSTRUMENT"),
-            deviceClassCandidates = listOf("android.hardware.bydauto.instrument.BYDAutoInstrumentDevice"),
+            deviceClass = "android.hardware.bydauto.instrument.BYDAutoInstrumentDevice",
+            listenerClass = "android.hardware.bydauto.instrument.AbsBYDAutoInstrumentListener",
+            deviceConstant = "BYDAUTO_DEVICE_INSTRUMENT",
         ),
         Category(
             label = "Panorama / 360 camera",
             permission = "android.permission.BYDAUTO_PANORAMA_COMMON",
-            catalogNestedCandidates = listOf("Panorama"),
-            deviceConstantCandidates = listOf("BYDAUTO_DEVICE_PANORAMA"),
-            deviceClassCandidates = listOf("android.hardware.bydauto.panorama.BYDAutoPanoramaDevice"),
+            deviceClass = "android.hardware.bydauto.panorama.BYDAutoPanoramaDevice",
+            listenerClass = "android.hardware.bydauto.panorama.AbsBYDAutoPanoramaListener",
+            deviceConstant = "BYDAUTO_DEVICE_PANORAMA",
         ),
         Category(
             label = "Vehicle setting",
             permission = "android.permission.BYDAUTO_SETTING_COMMON",
-            catalogNestedCandidates = listOf("Setting"),
-            deviceConstantCandidates = listOf("BYDAUTO_DEVICE_SETTING"),
-            deviceClassCandidates = listOf("android.hardware.bydauto.setting.BYDAutoSettingDevice"),
+            deviceClass = "android.hardware.bydauto.setting.BYDAutoSettingDevice",
+            listenerClass = "android.hardware.bydauto.setting.AbsBYDAutoSettingListener",
+            deviceConstant = "BYDAUTO_DEVICE_SETTING",
         ),
     )
 
-    data class Reading(
-        val fieldName: String,
-        val featureId: Int,
-        val value: Long?,
-        val error: String? = null,
-    )
+    /** The result of invoking one zero-argument reader. */
+    data class ReadResult(val call: String, val value: String?, val error: String? = null)
 
     data class Result(
         val category: Category,
         val granted: Boolean,
-        val resolvedCatalog: String?,
-        val resolvedDeviceConstant: String?,
         val deviceType: Int?,
-        val resolvedDeviceClass: String?,
-        val deviceGetInstance: String,
-        val readings: List<Reading>,
+        val getInstance: String,
+        val deviceMethods: List<String>,
+        val listenerCallbacks: List<String>,
+        val reads: List<ReadResult>,
         val note: String? = null,
     )
 
-    /** Runs the probe against the current process context. Does not mutate vehicle state. */
-    fun probe(context: Context): List<Result> {
-        val manager = runCatching { reflectManager(context) }.getOrNull()
-        val constantsClass = runCatching {
-            Class.forName("android.hardware.bydauto.BYDAutoConstants")
-        }.getOrNull()
-        return CATEGORIES.map { category ->
-            probeCategory(context, category, manager, constantsClass)
-        }
-    }
+    /** The generic SDK layer shared by every device, dumped once. */
+    data class SharedSurface(
+        val managerMethods: List<String>,
+        val baseDeviceMethods: List<String>,
+        val constants: List<Pair<String, Int>>,
+        val featureIdsPresent: Boolean,
+    )
 
-    /** Multi-line, human-readable, logcat-/clipboard-safe dump of [results]. */
-    fun format(results: List<Result>, header: String? = null): String = buildString {
+    data class Report(val shared: SharedSurface, val results: List<Result>)
+
+    fun probe(context: Context): Report = Report(
+        shared = probeSharedSurface(),
+        results = CATEGORIES.map { probeCategory(context, it) },
+    )
+
+    /** Multi-line, logcat-/clipboard-safe dump. Stable format so two runs diff cleanly. */
+    fun format(report: Report, header: String? = null): String = buildString {
         header?.let { appendLine(it); appendLine() }
-        for (r in results) {
+
+        append("== SDK surface (shared)\n")
+        append("   BYDAutoFeatureIds present: ").append(report.shared.featureIdsPresent).append('\n')
+        appendList("BYDAutoDeviceManager methods", report.shared.managerMethods)
+        appendList("AbsBYDAutoDevice methods", report.shared.baseDeviceMethods)
+        if (report.shared.constants.isEmpty()) {
+            append("   BYDAutoConstants: (unreadable)\n")
+        } else {
+            append("   BYDAutoConstants (").append(report.shared.constants.size).append("):\n")
+            for ((name, value) in report.shared.constants) {
+                append("     ").append(name).append(" = ").append(value).append('\n')
+            }
+        }
+        append('\n')
+
+        for (r in report.results) {
             append("== ").append(r.category.label).append('\n')
             append("   permission: ").append(r.category.permission).append('\n')
             append("   granted:    ").append(r.granted).append('\n')
-            append("   catalog:    ")
-                .append(r.resolvedCatalog ?: "(none of ${r.category.catalogNestedCandidates})")
-                .append('\n')
-            append("   device:     ")
-            if (r.resolvedDeviceConstant != null && r.deviceType != null) {
-                append(r.resolvedDeviceConstant).append(" = ").append(r.deviceType)
-            } else {
-                append("(none of ${r.category.deviceConstantCandidates})")
-            }
-            append('\n')
-            append("   sdk device: ")
-                .append(r.resolvedDeviceClass ?: "(none of ${r.category.deviceClassCandidates})")
-                .append(" -> ").append(r.deviceGetInstance).append('\n')
+            append("   device:     ").append(r.category.deviceConstant).append(" = ")
+                .append(r.deviceType?.toString() ?: "(not found)").append('\n')
+            append("   sdk device: ").append(r.category.deviceClass)
+                .append(" -> ").append(r.getInstance).append('\n')
             r.note?.let { append("   note:       ").append(it).append('\n') }
-            if (r.readings.isEmpty()) {
-                append("   (no feature ids read)\n")
+            appendList("methods", r.deviceMethods)
+            appendList("listener callbacks", r.listenerCallbacks)
+            if (r.reads.isEmpty()) {
+                append("   reads: (no zero-argument reader was safe to call)\n")
             } else {
-                append("   feature ids (").append(r.readings.size).append("):\n")
-                for (reading in r.readings) {
-                    append("     ").append(reading.fieldName)
-                        .append(" [0x").append(hex(reading.featureId)).append("] = ")
-                    when {
-                        reading.error != null -> append("ERR ").append(reading.error)
-                        else -> append(reading.value)
-                    }
+                append("   reads (").append(r.reads.size).append("):\n")
+                for (read in r.reads) {
+                    append("     ").append(read.call).append(" = ")
+                    append(read.error?.let { "ERR $it" } ?: read.value)
                     append('\n')
                 }
             }
@@ -153,135 +147,145 @@ object BydVehiclePermissionProbe {
         }
     }
 
-    private fun probeCategory(
-        context: Context,
-        category: Category,
-        manager: ManagerHandle?,
-        constantsClass: Class<*>?,
-    ): Result {
+    private fun StringBuilder.appendList(label: String, items: List<String>) {
+        if (items.isEmpty()) {
+            append("   ").append(label).append(": (none)\n")
+            return
+        }
+        append("   ").append(label).append(" (").append(items.size).append("):\n")
+        for (item in items) append("     ").append(item).append('\n')
+    }
+
+    private fun probeSharedSurface(): SharedSurface {
+        val manager = loadClass("android.hardware.bydauto.BYDAutoDeviceManager")
+        val base = loadClass("android.hardware.bydauto.AbsBYDAutoDevice")
+        val constantsClass = loadClass("android.hardware.bydauto.BYDAutoConstants")
+        return SharedSurface(
+            managerMethods = manager?.let(::describeMethods).orEmpty(),
+            baseDeviceMethods = base?.let(::describeMethods).orEmpty(),
+            constants = constantsClass?.let(::readIntConstants).orEmpty(),
+            featureIdsPresent = loadClass("android.hardware.bydauto.BYDAutoFeatureIds") != null,
+        )
+    }
+
+    private fun probeCategory(context: Context, category: Category): Result {
         val granted = isGranted(context, category.permission)
-        val catalog = resolveFirst(category.catalogNestedCandidates) { name ->
-            Class.forName("android.hardware.bydauto.BYDAutoFeatureIds\$$name")
+        val deviceType = loadClass("android.hardware.bydauto.BYDAutoConstants")
+            ?.let { readIntField(it, category.deviceConstant) }
+        val deviceClass = loadClass(category.deviceClass)
+        val listenerClass = loadClass(category.listenerClass)
+
+        if (deviceClass == null) {
+            return Result(
+                category = category,
+                granted = granted,
+                deviceType = deviceType,
+                getInstance = "class-not-found",
+                deviceMethods = emptyList(),
+                listenerCallbacks = listenerClass?.let(::describeMethods).orEmpty(),
+                reads = emptyList(),
+                note = "device class absent on this firmware",
+            )
         }
-        val device = resolveConstant(constantsClass, category.deviceConstantCandidates)
-        val (deviceClass, deviceClassName) = resolveDeviceClass(category.deviceClassCandidates)
-        val sdkOutcome = probeGetInstance(deviceClass, context)
-        val readings = buildReadings(manager, catalog?.second, device?.second)
-        val note = when {
-            manager == null -> "BYDAutoDeviceManager unavailable; feature ids not read"
-            catalog == null -> "feature-id catalog nested class not found; feature ids not read"
-            device == null -> "BYDAUTO_DEVICE_* constant not found; feature ids not read"
-            else -> null
+
+        val instance = try {
+            deviceClass.getMethod("getInstance", Context::class.java).invoke(null, context)
+        } catch (error: Throwable) {
+            return Result(
+                category = category,
+                granted = granted,
+                deviceType = deviceType,
+                getInstance = describe(error),
+                deviceMethods = describeMethods(deviceClass),
+                listenerCallbacks = listenerClass?.let(::describeMethods).orEmpty(),
+                reads = emptyList(),
+                note = "getInstance refused; no reader was called",
+            )
         }
+
         return Result(
             category = category,
             granted = granted,
-            resolvedCatalog = catalog?.first,
-            resolvedDeviceConstant = device?.first,
-            deviceType = device?.second,
-            resolvedDeviceClass = deviceClassName,
-            deviceGetInstance = sdkOutcome,
-            readings = readings,
-            note = note,
+            deviceType = deviceType,
+            getInstance = if (instance == null) "null" else "ok",
+            deviceMethods = describeMethods(deviceClass),
+            listenerCallbacks = listenerClass?.let(::describeMethods).orEmpty(),
+            reads = if (instance == null) emptyList() else invokeSafeReaders(deviceClass, instance),
+            note = if (instance == null) "getInstance returned null; no reader was called" else null,
         )
     }
 
-    private fun probeGetInstance(deviceClass: Class<*>?, context: Context): String {
-        if (deviceClass == null) return "class-not-found"
-        return try {
-            val method = deviceClass.getMethod("getInstance", Context::class.java)
-            val instance = method.invoke(null, context)
-            if (instance == null) "null" else "ok"
-        } catch (error: Throwable) {
-            describe(error)
-        }
-    }
-
-    private fun buildReadings(
-        manager: ManagerHandle?,
-        catalogClass: Class<*>?,
-        deviceType: Int?,
-    ): List<Reading> {
-        if (manager == null || catalogClass == null || deviceType == null) return emptyList()
-        val readings = ArrayList<Reading>()
-        for (field in catalogClass.declaredFields) {
-            if (!Modifier.isStatic(field.modifiers)) continue
-            val isInt = field.type == Int::class.javaPrimitiveType
-            val isLong = field.type == Long::class.javaPrimitiveType
-            if (!isInt && !isLong) continue
-            // _SET fields are write-shaped; probing them as reads is noisy. Keep _GET and plain names.
-            if (field.name.endsWith("_SET") && !field.name.endsWith("_GET_SET")) continue
-            field.isAccessible = true
-            val featureId = when {
-                isInt -> field.getInt(null)
-                else -> field.getLong(null).toInt()
+    /**
+     * Invokes every zero-argument reader on [instance]. A method qualifies only when it takes no
+     * argument (so no value can be handed to the car), returns something, and its name begins with
+     * a read verb that is not on [FORBIDDEN_PREFIX].
+     */
+    private fun invokeSafeReaders(type: Class<*>, instance: Any): List<ReadResult> =
+        readableMethods(type).map { method ->
+            val call = "${method.name}(): ${simpleName(method.returnType)}"
+            try {
+                ReadResult(call, render(method.invoke(instance)))
+            } catch (error: Throwable) {
+                ReadResult(call, null, describe(error))
             }
-            val read = runCatching { manager.getInt(deviceType, featureId) }
-            readings.add(
-                if (read.isSuccess) {
-                    Reading(field.name, featureId, read.getOrNull()?.toLong())
-                } else {
-                    Reading(field.name, featureId, null, error = describe(read.exceptionOrNull()!!))
-                }
-            )
         }
-        return readings.sortedBy { it.fieldName }
-    }
 
-    private fun resolveConstant(
-        constantsClass: Class<*>?,
-        candidates: List<String>,
-    ): Pair<String, Int>? {
-        constantsClass ?: return null
-        for (name in candidates) {
-            val value = runCatching {
-                val field = constantsClass.getField(name)
-                if (!Modifier.isStatic(field.modifiers) || field.type != Int::class.javaPrimitiveType) {
-                    null
-                } else {
-                    field.getInt(null)
-                }
-            }.getOrNull()
-            if (value != null) return name to value
+    private fun readableMethods(type: Class<*>): List<Method> = runCatching {
+        type.methods
+            .filter { it.declaringClass != Any::class.java }
+            .filter { it.parameterCount == 0 }
+            .filter { it.returnType != Void.TYPE }
+            .filter { !Modifier.isStatic(it.modifiers) }
+            .filter { method -> READ_PREFIX.any { method.name.startsWith(it) } }
+            .filterNot { isWriteShaped(it.name) }
+            .distinctBy { it.name }
+            .sortedBy { it.name }
+    }.getOrDefault(emptyList())
+
+    private fun describeMethods(type: Class<*>): List<String> = runCatching {
+        type.declaredMethods
+            .filterNot { it.isSynthetic }
+            .map { method ->
+                val args = method.parameterTypes.joinToString(", ", transform = ::simpleName)
+                val prefix = if (Modifier.isStatic(method.modifiers)) "static " else ""
+                "$prefix${method.name}($args): ${simpleName(method.returnType)}"
+            }
+            .distinct()
+            .sorted()
+    }.getOrDefault(emptyList())
+
+    private fun readIntConstants(type: Class<*>): List<Pair<String, Int>> = runCatching {
+        type.declaredFields
+            .filter { Modifier.isStatic(it.modifiers) && it.type == Int::class.javaPrimitiveType }
+            .mapNotNull { field ->
+                field.isAccessible = true
+                runCatching { field.name to field.getInt(null) }.getOrNull()
+            }
+            .sortedBy { it.first }
+    }.getOrDefault(emptyList())
+
+    private fun readIntField(type: Class<*>, name: String): Int? = runCatching {
+        val field = type.getField(name)
+        if (!Modifier.isStatic(field.modifiers) || field.type != Int::class.javaPrimitiveType) {
+            null
+        } else {
+            field.getInt(null)
         }
-        return null
+    }.getOrNull()
+
+    private fun render(value: Any?): String = when (value) {
+        null -> "null"
+        is IntArray -> value.joinToString(prefix = "[", postfix = "]")
+        is LongArray -> value.joinToString(prefix = "[", postfix = "]")
+        is ByteArray -> value.joinToString(" ", "[", "]") { "%02x".format(it) }.take(MAX_VALUE_CHARS)
+        is BooleanArray -> value.joinToString(prefix = "[", postfix = "]")
+        is Array<*> -> value.joinToString(prefix = "[", postfix = "]").take(MAX_VALUE_CHARS)
+        else -> value.toString().take(MAX_VALUE_CHARS)
     }
 
-    private fun resolveDeviceClass(candidates: List<String>): Pair<Class<*>?, String?> {
-        for (name in candidates) {
-            val cls = runCatching { Class.forName(name) }.getOrNull()
-            if (cls != null) return cls to name
-        }
-        return null to null
-    }
+    private fun loadClass(name: String): Class<*>? = runCatching { Class.forName(name) }.getOrNull()
 
-    private fun <T : Any> resolveFirst(candidates: List<String>, loader: (String) -> T): Pair<String, T>? {
-        for (name in candidates) {
-            val found = runCatching { loader(name) }.getOrNull()
-            if (found != null) return name to found
-        }
-        return null
-    }
-
-    private fun reflectManager(context: Context): ManagerHandle {
-        val managerClass = Class.forName("android.hardware.bydauto.BYDAutoDeviceManager")
-        val instance = managerClass.getMethod("getInstance", Context::class.java)
-            .invoke(null, context) ?: error("BYDAutoDeviceManager.getInstance returned null")
-        val getInt = managerClass.getMethod(
-            "getInt",
-            Int::class.javaPrimitiveType,
-            Int::class.javaPrimitiveType,
-        )
-        return ManagerHandle(instance, getInt)
-    }
-
-    private class ManagerHandle(
-        private val instance: Any,
-        private val getInt: java.lang.reflect.Method,
-    ) {
-        fun getInt(type: Int, fid: Int): Int =
-            (getInt.invoke(instance, type, fid) as Number).toInt()
-    }
+    private fun simpleName(type: Class<*>): String = type.simpleName.ifBlank { type.name }
 
     private fun isGranted(context: Context, perm: String): Boolean =
         context.checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED
@@ -292,6 +296,50 @@ object BydVehiclePermissionProbe {
         return name + (root.message?.let { ": $it" }.orEmpty())
     }
 
-    private fun hex(value: Int): String =
-        value.toLong().and(0xFFFFFFFFL).toString(16)
+    private const val MAX_VALUE_CHARS = 200
+
+    private val READ_PREFIX = listOf("get", "is", "has", "query", "read", "fetch", "can", "support")
+
+    /**
+     * Anything that could hand a value to the car, change SDK state, or tear down a device.
+     * Checked against the whole method name, so `getAndSet…` style names are refused too.
+     */
+    /**
+     * True when [name] looks like it changes something rather than reports it, so the probe must
+     * not invoke it. Mutating verbs are matched as whole camelCase words: a substring test would
+     * reject `getDoorLockState`, whose "Lock" is part of this SDK's own device noun.
+     */
+    private fun isWriteShaped(name: String): Boolean {
+        val words = camelWords(name)
+        val leading = words.firstOrNull() ?: return true
+        if (leading in MUTATING_VERB) return true
+        val rest = if (leading in READ_PREFIX) words.drop(1) else words
+        return rest.any { it in MUTATING_VERB && it !in NOUN_NOT_VERB }
+    }
+
+    /** Lets the test pin the write-shape filter down without a car or the vendor SDK. */
+    internal fun isWriteShapedForTest(name: String): Boolean = isWriteShaped(name)
+
+    private fun camelWords(name: String): List<String> =
+        CAMEL_WORD.findAll(name).map { it.value.lowercase() }.toList()
+
+    private val CAMEL_WORD = Regex("[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|[0-9]+")
+
+    /** Verbs that change the car or the SDK. A name beginning with one is never invoked. */
+    private val MUTATING_VERB = setOf(
+        "set", "send", "write", "start", "stop", "open", "close", "enable", "disable",
+        "register", "unregister", "subscribe", "unsubscribe", "release", "destroy", "reset",
+        "clear", "remove", "add", "request", "execute", "control", "notify", "post", "update",
+        "init", "create", "connect", "disconnect", "login", "logout", "switch", "toggle",
+        "apply", "commit", "save", "delete", "put", "trigger", "activate", "lock", "unlock",
+        "exit", "finish", "cancel", "abort", "kill", "shutdown", "reboot", "restart",
+        "install", "upgrade", "format", "erase", "wipe",
+    )
+
+    /**
+     * Words that collide with a mutating verb but read as nouns inside this SDK: "DoorLock" is a
+     * device name (`android.hardware.bydauto.doorlock`). A name that *begins* with lock/unlock is
+     * still refused by the leading-verb check above.
+     */
+    private val NOUN_NOT_VERB = setOf("lock", "unlock")
 }
