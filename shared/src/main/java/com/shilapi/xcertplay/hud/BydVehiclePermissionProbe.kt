@@ -7,9 +7,11 @@ import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 
 /**
- * Read probe for the six BYDAUTO_*_COMMON vendor permissions BYD's modified PackageInstaller
- * on DiLink 1.0 lets a driver grant from Settings -> App -> Permissions. See
- * docs/BYD_VENDOR_PERMISSIONS.md for the firmware audit that identified these six.
+ * Read probe for the nine BYDAUTO_*_COMMON vendor permissions the HUD test build requests on
+ * DiLink 1.0. Six of them the driver grants from BYD Settings -> App -> Permissions and has
+ * confirmed on the car; charging, gearbox and audio were added after the firmware audit showed the
+ * same scheme covers them. See docs/BYD_VENDOR_PERMISSIONS.md for the audit behind both the list
+ * and the class names.
  *
  * DiLink 1.0 ships no BYDAutoFeatureIds catalog (verified against VP128 firmware), so there is
  * no feature-id list to sweep the way DiLink 5.x allows. Instead the probe asks the installed SDK
@@ -73,6 +75,39 @@ object BydVehiclePermissionProbe {
             listenerClass = "android.hardware.bydauto.setting.AbsBYDAutoSettingListener",
             deviceConstant = "BYDAUTO_DEVICE_SETTING",
         ),
+        Category(
+            label = "Charging",
+            permission = "android.permission.BYDAUTO_CHARGING_COMMON",
+            deviceClass = "android.hardware.bydauto.charging.BYDAutoChargingDevice",
+            listenerClass = "android.hardware.bydauto.charging.AbsBYDAutoChargingListener",
+            deviceConstant = "BYDAUTO_DEVICE_CHARGING",
+        ),
+        Category(
+            label = "Gearbox",
+            permission = "android.permission.BYDAUTO_GEARBOX_COMMON",
+            deviceClass = "android.hardware.bydauto.gearbox.BYDAutoGearboxDevice",
+            listenerClass = "android.hardware.bydauto.gearbox.AbsBYDAutoGearboxListener",
+            deviceConstant = "BYDAUTO_DEVICE_GEARBOX",
+        ),
+        Category(
+            label = "Audio",
+            permission = "android.permission.BYDAUTO_AUDIO_COMMON",
+            deviceClass = "android.hardware.bydauto.audio.BYDAutoAudioDevice",
+            listenerClass = "android.hardware.bydauto.audio.AbsBYDAutoAudioListener",
+            deviceConstant = "BYDAUTO_DEVICE_AUDIO",
+        ),
+    )
+
+    /**
+     * A stock Android runtime permission the debug manifest declares next to the vendor ones. No
+     * BYD device sits behind it, so it gets no device section — it is reported so the driver's
+     * permission list can be read across the one entry that belongs to a permission group and the
+     * nine BYDAUTO_* ones that belong to none.
+     */
+    data class StockPermission(val label: String, val permission: String, val granted: Boolean = false)
+
+    val STOCK_PERMISSIONS: List<StockPermission> = listOf(
+        StockPermission("Body sensors", "android.permission.BODY_SENSORS"),
     )
 
     /** The result of invoking one zero-argument reader. */
@@ -97,11 +132,16 @@ object BydVehiclePermissionProbe {
         val featureIdsPresent: Boolean,
     )
 
-    data class Report(val shared: SharedSurface, val results: List<Result>)
+    data class Report(
+        val shared: SharedSurface,
+        val results: List<Result>,
+        val stock: List<StockPermission> = emptyList(),
+    )
 
     fun probe(context: Context): Report = Report(
         shared = probeSharedSurface(),
         results = CATEGORIES.map { probeCategory(context, it) },
+        stock = STOCK_PERMISSIONS.map { it.copy(granted = isGranted(context, it.permission)) },
     )
 
     /** Multi-line, logcat-/clipboard-safe dump. Stable format so two runs diff cleanly. */
@@ -142,6 +182,15 @@ object BydVehiclePermissionProbe {
                     append(read.error?.let { "ERR $it" } ?: read.value)
                     append('\n')
                 }
+            }
+            append('\n')
+        }
+
+        if (report.stock.isNotEmpty()) {
+            append("== Stock Android permissions (control; no BYD device behind them)\n")
+            for (entry in report.stock) {
+                append("   ").append(entry.label).append(": ").append(entry.permission)
+                    .append("  granted: ").append(entry.granted).append('\n')
             }
             append('\n')
         }

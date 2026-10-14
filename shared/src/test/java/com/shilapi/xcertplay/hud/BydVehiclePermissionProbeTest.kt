@@ -6,7 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BydVehiclePermissionProbeTest {
-    @Test fun probesTheSixWhitelistedPermissions() {
+    @Test fun probesEveryUserGrantableVendorPermission() {
         val permissions = BydVehiclePermissionProbe.CATEGORIES.map { it.permission }
         assertEquals(
             listOf(
@@ -16,9 +16,38 @@ class BydVehiclePermissionProbeTest {
                 "android.permission.BYDAUTO_INSTRUMENT_COMMON",
                 "android.permission.BYDAUTO_PANORAMA_COMMON",
                 "android.permission.BYDAUTO_SETTING_COMMON",
+                "android.permission.BYDAUTO_CHARGING_COMMON",
+                "android.permission.BYDAUTO_GEARBOX_COMMON",
+                "android.permission.BYDAUTO_AUDIO_COMMON",
             ),
             permissions,
         )
+    }
+
+    /**
+     * The control permission backs no BYD device, so it must stay out of [CATEGORIES] — a stray
+     * entry there would have the probe call `getInstance` on a class that cannot exist.
+     */
+    @Test fun reportsTheStockControlPermissionOutsideTheBydCategories() {
+        val stock = BydVehiclePermissionProbe.STOCK_PERMISSIONS
+        val stockPermissions = stock.map { it.permission }
+        assertEquals(listOf("android.permission.BODY_SENSORS"), stockPermissions)
+        assertTrue(
+            "the control must not be probed as a vendor category",
+            BydVehiclePermissionProbe.CATEGORIES.none { it.permission in stockPermissions },
+        )
+
+        val text = BydVehiclePermissionProbe.format(
+            BydVehiclePermissionProbe.Report(
+                BydVehiclePermissionProbe.SharedSurface(emptyList(), emptyList(), emptyList(), false),
+                emptyList(),
+                stock.map { it.copy(granted = true) },
+            )
+        )
+        assertTrue("stock section is rendered", text.contains("Stock Android permissions"))
+        assertTrue("the control permission is named", text.contains("android.permission.BODY_SENSORS"))
+        assertTrue("its grant state is shown", text.contains("granted: true"))
+        assertFalse("it claims no BYD device", text.contains("android.hardware.bydauto."))
     }
 
     /** Class names were read out of VP128 (DiLink 1.0) firmware; a typo would silently probe nothing. */

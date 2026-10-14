@@ -19,9 +19,9 @@ import java.util.Locale
 
 /**
  * HUD-test entry point for the BYD vendor permission probe. Launcher-visible only in the debug
- * (.hudtest) build. Reads every feature id advertised under BYDAutoFeatureIds$<Nested> for the
- * six BYDAUTO_*_COMMON permissions and prints the results on screen so the driver can verify
- * which categories actually return data on their car.
+ * (.hudtest) build. For each of the nine BYDAUTO_*_COMMON permissions it prints the matching SDK
+ * device's declared methods, the AbsBYDAuto*Listener callbacks, and the value of every
+ * zero-argument reader, so the driver can verify which categories actually return data on their car.
  *
  * The activity performs no vehicle writes. See docs/BYD_VENDOR_PERMISSIONS.md.
  */
@@ -81,8 +81,10 @@ class BydVehiclePermissionsProbeActivity : Activity() {
             addView(
                 TextView(this@BydVehiclePermissionsProbeActivity).apply {
                     text = "Read-only: lists the installed BYD SDK surface and calls only " +
-                        "zero-argument readers. Flip the six BYDAUTO_*_COMMON toggles in BYD " +
-                        "Settings → App → DiPlay HUD Test → Permissions, then tap Refresh."
+                        "zero-argument readers. Grant every BYDAUTO_*_COMMON permission — flip " +
+                        "the toggles in BYD Settings → App → DiPlay HUD Test → Permissions, or " +
+                        "run adb shell pm grant — then tap Refresh. If a toggle is missing, " +
+                        "pm grant still works."
                     textSize = 12f
                     setPadding(16, 0, 16, 8)
                 }
